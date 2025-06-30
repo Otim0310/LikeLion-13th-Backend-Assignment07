@@ -5,96 +5,121 @@ import com.likelion.basecode.common.exception.BusinessException;
 import com.likelion.basecode.naver.api.dto.response.NaverResponseDto;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.web.util.UriComponentsBuilder;
 
-import java.net.URI;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
 public class NaverSearchClient {
+
+    private static final String BLOG_ENDPOINT = "/blog.json";
+    private static final int DEFAULT_DISPLAY_COUNT = 3;
+    private static final int DEFAULT_START_INDEX = 1;
+
     private final RestTemplate restTemplate;
 
     @Value("${naver-api.base-url}")
-    private String baseUrl;
+    private String naverApiBaseUrl;
 
     @Value("${naver-api.client-id}")
-    private String clientId;
+    private String naverClientId;
 
     @Value("${naver-api.client-secret}")
-    private String clientSecret;
+    private String naverClientSecret;
 
-    public List<NaverResponseDto> search(String query) {
-        // url 만들기
-        URI uri = UriComponentsBuilder.fromUriString(baseUrl + "/blog.json")
-                .queryParam("query", query)
-                .queryParam("display", 3)
-                .queryParam("start", 1)
-                .build()
-                .encode()
-                .toUri();
+    public List<NaverResponseDto> search(String searchKeyword) {
+        String requestUrl = buildSearchUrl(searchKeyword);
+        HttpEntity<String> httpRequest = createHttpRequest();
 
-        // 네이버는 반드시 헤더에 클라이언트 id와 secret코드를 포함해야함.
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("X-Naver-Client-Id", clientId);
-        headers.set("X-Naver-Client-Secret", clientSecret);
-        HttpEntity<Void> entity = new HttpEntity<>(headers); // 요청에 header 정보를 포함해줌
+        ResponseEntity<Map> apiResponse = executeSearchRequest(requestUrl, httpRequest);
+        Map<String, Object> responseBody = validateAndExtractResponseBody(apiResponse);
 
-        ResponseEntity<Map> response = restTemplate.exchange(uri, HttpMethod.GET, entity, Map.class);
+        List<Map<String, Object>> searchItems = extractSearchItems(responseBody);
+        return convertToResponseDtos(searchItems);
+    }
 
-        // 응답 body가 null인 경우 예외 발생
-        Map<String, Object> body = Optional.ofNullable(response.getBody())
-                .orElseThrow(() -> new BusinessException(
-                        ErrorCode.NAVER_API_RESPONSE_NULL,
-                        ErrorCode.NAVER_API_RESPONSE_NULL.getMessage()
-                ));
+    private String buildSearchUrl(String keyword) {
+        return String.format("%s%s?query=%s&display=%d&start=%d",
+                naverApiBaseUrl,
+                BLOG_ENDPOINT,
+                keyword,
+                DEFAULT_DISPLAY_COUNT,
+                DEFAULT_START_INDEX);
+    }
 
-        // 'items' 리스트를 추출한 후 NaverResponseDto 형태로 변환
-        @SuppressWarnings("unchecked") // Java 컴파일러 경고를 무시하도록 하는 어노테이션-!
-        Object itemsObj = body.get("items");
+    private HttpEntity<String> createHttpRequest() {
+        HttpHeaders requestHeaders = new HttpHeaders();
+        requestHeaders.add("X-Naver-Client-Id", naverClientId);
+        requestHeaders.add("X-Naver-Client-Secret", naverClientSecret);
+        requestHeaders.setContentType(MediaType.APPLICATION_JSON);
 
-        if (!(itemsObj instanceof List<?> items)) {
+        return new HttpEntity<>(requestHeaders);
+    }
+
+    private ResponseEntity<Map> executeSearchRequest(String url, HttpEntity<String> request) {
+        try {
+            return restTemplate.exchange(url, HttpMethod.GET, request, Map.class);
+        } catch (Exception e) {
+            throw new BusinessException(
+                    ErrorCode.NAVER_API_RESPONSE_NULL,
+                    "네이버 API 요청 중 오류가 발생했습니다: " + e.getMessage()
+            );
+        }
+    }
+
+    private Map<String, Object> validateAndExtractResponseBody(ResponseEntity<Map> response) {
+        if (response.getBody() == null) {
+            throw new BusinessException(
+                    ErrorCode.NAVER_API_RESPONSE_NULL,
+                    ErrorCode.NAVER_API_RESPONSE_NULL.getMessage()
+            );
+        }
+        return response.getBody();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> extractSearchItems(Map<String, Object> responseBody) {
+        Object itemsData = responseBody.get("items");
+
+        if (itemsData == null) {
+            return Collections.emptyList();
+        }
+
+        if (!(itemsData instanceof List<?>)) {
             throw new BusinessException(
                     ErrorCode.NAVER_API_ITEM_MALFORMED,
                     ErrorCode.NAVER_API_ITEM_MALFORMED.getMessage()
             );
         }
 
-        return items.stream()
-                .map(item -> toDto((Map<String, Object>) item))  //
+        List<?> rawItems = (List<?>) itemsData;
+        return rawItems.stream()
+                .filter(Map.class::isInstance)
+                .map(item -> (Map<String, Object>) item)
                 .collect(Collectors.toList());
     }
 
-    // Map을 NaverResponseDto로 변환
-    private NaverResponseDto toDto(Map<String, Object> item) {
-        return new NaverResponseDto(
-                (String) item.getOrDefault("title", ""),
-                (String) item.getOrDefault("description", ""),
-                (String) item.getOrDefault("postdate", ""),
-                (String) item.getOrDefault("link", "")
-        );
+    private List<NaverResponseDto> convertToResponseDtos(List<Map<String, Object>> items) {
+        return items.stream()
+                .map(this::mapToNaverResponseDto)
+                .collect(Collectors.toList());
     }
 
-    // 위에서 설명한 상황과 유사하다고 생각하면 됨.
-    // (정확히는 Map<String, Object> 캐스팅은 컴파일러가 타입 안정성을 확인할 수 없기 때문)
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> castToMap(Object obj, ErrorCode errorCode) {
-        // obj가 Map 타입이 아닌 경우 예외를 발생
-        if (!(obj instanceof Map)) {
-            // 비즈니스 로직에 정의된 에러 코드와 메시지를 포함한 예외를 던짐
-            throw new BusinessException(errorCode, errorCode.getMessage());
-        }
+    private NaverResponseDto mapToNaverResponseDto(Map<String, Object> itemData) {
+        String title = extractStringValue(itemData, "title");
+        String description = extractStringValue(itemData, "description");
+        String postDate = extractStringValue(itemData, "postdate");
+        String linkUrl = extractStringValue(itemData, "link");
 
-        // Map 타입이 확인 -> 따라서 안전하게 형변환하여 반환-!
-        return (Map<String, Object>) obj;
+        return new NaverResponseDto(title, description, postDate, linkUrl);
+    }
+
+    private String extractStringValue(Map<String, Object> data, String key) {
+        Object value = data.get(key);
+        return value != null ? value.toString() : "";
     }
 }
