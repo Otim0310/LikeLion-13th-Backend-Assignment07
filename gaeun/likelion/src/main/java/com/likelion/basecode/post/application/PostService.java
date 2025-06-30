@@ -92,8 +92,8 @@ public class PostService {
             if (oldImageUrl != null) {
                 s3Uploader.deleteUrl(oldImageUrl);
             }
-            String newimageUrl = s3Uploader.upload(imageFile, "post-images");
-            postWithTags.updateImage(newimageUrl);
+            String newImageUrl = s3Uploader.upload(imageFile, "post-images");
+            postWithTags.updateImage(newImageUrl);
         }
 
         postWithTags.update(postUpdateRequestDto);
