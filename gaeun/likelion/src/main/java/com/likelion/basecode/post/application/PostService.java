@@ -112,7 +112,7 @@ public class PostService {
 
     //이미지만 삭제하는걸 만들라고 했으니까
     @Transactional
-    public void postUrlDelete(Long postId) {
+    public void deletePostImage(Long postId) {
         Post post = postRepository.findById(postId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.POST_NOT_FOUND_EXCEPTION,
                         ErrorCode.POST_NOT_FOUND_EXCEPTION.getMessage() + postId));
